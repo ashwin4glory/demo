@@ -1,6 +1,8 @@
 package com.example.demo.entity;
 
 
+import com.amazonaws.services.ec2.model.Instance;
+import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
@@ -8,10 +10,14 @@ import lombok.ToString;
 @Getter
 @Setter
 @ToString
-public class EC2Instance {
+@Entity
+public class EC2Instance extends Instance {
 
-    private Long id;
-
+    @Id
     private String instanceId;
+
     private String instanceType;
+
+    @Lob
+    private String description;
 }
