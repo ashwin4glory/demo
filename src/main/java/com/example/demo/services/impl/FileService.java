@@ -24,6 +24,7 @@ import software.amazon.awssdk.services.s3.model.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -49,43 +50,68 @@ public class FileService implements IFileService {
     @Autowired
     private S3BucketFilesRepository s3BucketFilesRepository;
 
-    // @Async annotation ensures that the method is executed in a different thread
     @Async
     @Override
-    public void getService(ServiceRequest serviceRequest, Job job) throws DataIntegrityViolationException {
+    public void getService(ServiceRequest serviceRequest, Job job) {
         try {
-            List<S3Buckets> s3Buckets = null;
-            List<EC2Instance> ec2Instances = null;
-            for (String serviceName : serviceRequest.getServices()) {
-                if ("S3".equals(serviceName)) {
-                    // Logic to get a list of S3 buckets
-                    ListBucketsResponse buckets = s3Client.listBuckets();
-                    s3Buckets = mapToS3Bucket(buckets.buckets().stream()
-                            .collect(Collectors.toList()));
-                } else if ("EC2".equals(serviceName)) {
-                    // Logic to get a list of EC2 instance IDs
-                    DescribeInstancesResult response = ec2Client.describeInstances();
-                    List<Instance> instances = response.getReservations().stream()
-                            .flatMap(reservation -> reservation.getInstances().stream())
-                            .toList();
-                    ec2Instances = mapToEC2Instance(instances);
-                } else {
-                    continue;
-                }
-            }
-            job.setEc2Instances(ec2Instances);
+            List<S3Buckets> s3Buckets = new ArrayList<>();
+            List<EC2Instance> ec2Instances = new ArrayList<>();
             job.setS3Buckets(s3Buckets);
+            job.setEc2Instances(ec2Instances);
+            List<CompletableFuture> data = new ArrayList<>();
+            for (String serviceName : serviceRequest.getServices()) {
+                data.add(performOperation(serviceName));
+            }
+            CompletableFuture.allOf(data.toArray(new CompletableFuture[0])).join();
+            for (CompletableFuture completableFuture : data) {
+                Object obj = completableFuture.get();
+                if (obj instanceof List) {
+                    if (((List<?>) obj).get(0) instanceof EC2Instance) {
+                        ec2Instances = (List<EC2Instance>) obj;
+                    } else if (((List<?>) obj).get(0) instanceof S3Buckets) {
+                        s3Buckets = (List<S3Buckets>) obj;
+                    }
+                }
+
+            }
+            if (!ec2Instances.isEmpty()) {
+                job.setEc2Instances(ec2Instances);
+            }
+            if (!s3Buckets.isEmpty()) {
+                job.setS3Buckets(s3Buckets);
+            }
             job.setS3BucketFiles(new ArrayList<>());
             job.setStatus(Status.SUCCESS);
             jobRepository.save(job);
 
         } catch(Exception e) {
+            log.error(e.getMessage());
             log.info("Failed in completing the job, marking the job status to FAILED");
             job.setStatus(Status.FAILED);
             job.setS3Buckets(new ArrayList<>());
             job.setEc2Instances(new ArrayList<>());
             jobRepository.save(job);
         }
+    }
+
+    @Async
+    public CompletableFuture<Object> performOperation(String serviceName) {
+        if ("S3".equals(serviceName)) {
+            // Logic to get a list of S3 buckets
+            ListBucketsResponse buckets = s3Client.listBuckets();
+            List<S3Buckets> s3Buckets = mapToS3Bucket(buckets.buckets().stream()
+                    .collect(Collectors.toList()));
+            return CompletableFuture.completedFuture(s3Buckets);
+        } else if ("EC2".equals(serviceName)) {
+            // Logic to get a list of EC2 instance IDs
+            DescribeInstancesResult response = ec2Client.describeInstances();
+            List<Instance> instances = response.getReservations().stream()
+                    .flatMap(reservation -> reservation.getInstances().stream())
+                    .toList();
+            List<EC2Instance> ec2Instances = mapToEC2Instance(instances);
+            return CompletableFuture.completedFuture(ec2Instances);
+        }
+        return null;
     }
 
     private List<EC2Instance> mapToEC2Instance(List<Instance> instances) {
